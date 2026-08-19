@@ -1,0 +1,51 @@
+// Schema de Prisma — auth-ms es el ÚNICO servicio que habla con esta
+// base de datos. El gateway no tiene DATABASE_URL en absoluto; ese
+// aislamiento es justamente el punto del límite de microservicio.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String         @id @default(uuid())
+  email         String         @unique
+  passwordHash  String // hash bcrypt — la contraseña en texto plano nunca toca la base
+  createdAt     DateTime       @default(now())
+  refreshTokens RefreshToken[]
+}
+
+// Los refresh tokens son secretos tipo bearer, así que se tratan como
+// contraseñas: solo se guarda el hash SHA-256. Si la base de datos se
+// filtra, los hashes filtrados no sirven para autenticarse — el atacante
+// necesitaría el token en texto plano.
+model RefreshToken {
+  id        String   @id @default(uuid())
+  tokenHash String   @unique // sha256(token) — el texto plano nunca se persiste
+
+  // Familia de tokens (RFC 9700 §4.14.2): una sesión de login = una
+  // familia. Cada rotación mantiene el mismo familyId, así que una
+  // señal de robo (reuso de un token ya rotado) puede revocar TODA la
+  // cadena de la sesión de una sola vez.
+  familyId String
+
+  userId String
+  user   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  expiresAt DateTime // createdAt + REFRESH_TOKEN_TTL_DAYS
+
+  // revokedAt != null  → el token está muerto (logout o detección de robo).
+  // replacedById != null → el token ya fue rotado; presentarlo de nuevo
+  // significa que alguien está reutilizando un token viejo → se dispara
+  // la detección de reuso.
+  revokedAt    DateTime?
+  replacedById String?
+  createdAt    DateTime  @default(now())
+
+  @@index([familyId])
+  @@index([userId])
+}
